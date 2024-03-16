@@ -1,0 +1,91 @@
+import ccxt
+import asyncio
+import pandas as pd
+import numpy as np
+import logging
+
+# Configuration de la journalisation
+logging.basicConfig(filename='arbitrage.log', level=logging.INFO, 
+                    format='%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S')
+
+# Initialisation de l'échange Binance en mode test
+exchange = ccxt.binance({
+    'apiKey': 'YOUR_TEST_API_KEY',
+    'secret': 'YOUR_TEST_SECRET_KEY',
+    'enableRateLimit': True,
+    'options': {
+        'defaultType': 'future'
+    }
+})
+
+# Paires de trading
+symbols = ['BTC/USDT', 'ETH/BTC', 'ETH/USDT']
+
+# Fonction pour récupérer les données de marché
+async def fetch_market_data(symbol):
+    try:
+        ticker = await exchange.fetch_ticker(symbol)
+        return ticker
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération des données pour {symbol}: {e}")
+        return None
+
+# Fonction pour détecter les opportunités d'arbitrage  
+def find_arbitrage(tickers):
+    btc_usdt_ask = tickers[0]['ask'] 
+    btc_usdt_bid = tickers[0]['bid']
+    eth_btc_ask = tickers[1]['ask']
+    eth_btc_bid = tickers[1]['bid'] 
+    eth_usdt_ask = tickers[2]['ask']
+    eth_usdt_bid = tickers[2]['bid']
+
+    # Forward
+    forward = eth_usdt_bid / (eth_btc_ask * btc_usdt_ask)
+
+    # Reverse
+    reverse = (1 / eth_usdt_ask) * (1 / eth_btc_bid) * btc_usdt_bid
+    
+    return forward, reverse
+
+# Fonction pour passer un ordre
+async def create_order(symbol, type, side, amount):
+    try:
+        logging.info(f"Passage d'un ordre {type} {side} de {amount} sur {symbol}")
+        order = await exchange.create_order(symbol, type, side, amount)
+        logging.info(f"Ordre exécuté: {order}")
+    except Exception as e:
+        logging.error(f"Erreur lors du passage de l'ordre: {e}")
+
+# Fonction principale d'arbitrage
+async def arbitrage():
+    while True:
+        # Récupération des données de marché
+        tickers = await asyncio.gather(*[fetch_market_data(symbol) for symbol in symbols])
+
+        # Vérification des opportunités d'arbitrage
+        forward, reverse = find_arbitrage(tickers)
+
+        # Calcul du profit potentiel en tenant compte des frais (ici 0.1% par transaction)
+        profit_forward = (forward - 1) - 0.003
+        profit_reverse = (reverse - 1) - 0.003
+
+        if profit_forward > 0:
+            logging.info(f"Opportunité d'arbitrage forward détectée avec un profit potentiel de {profit_forward:.3%}")
+            # Passage des ordres
+            await create_order('ETH/USDT', 'market', 'buy', 1)  
+            await create_order('ETH/BTC', 'market', 'sell', 1)
+            await create_order('BTC/USDT', 'market', 'sell', 1)
+        elif profit_reverse > 0:
+            logging.info(f"Opportunité d'arbitrage reverse détectée avec un profit potentiel de {profit_reverse:.3%}")
+            # Passage des ordres  
+            await create_order('BTC/USDT', 'market', 'buy', 1)
+            await create_order('ETH/BTC', 'market', 'buy', 1)
+            await create_order('ETH/USDT', 'market', 'sell', 1)
+        else:
+            logging.info("Aucune opportunité d'arbitrage détectée")
+
+        # Pause pour respecter les limites de taux de Binance
+        await asyncio.sleep(exchange.rateLimit / 1000)
+
+# Exécution du bot
+asyncio.run(arbitrage())
